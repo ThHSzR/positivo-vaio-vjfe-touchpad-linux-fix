@@ -1,0 +1,6 @@
+[Positivo VAIO VJFE physical touchpad buttons]
+MatchUdevType=touchpad
+MatchName=SYNA3602:00 0911:5288 Touchpad
+MatchDMIModalias=dmi:*svnPositivoBahia-VAIO:pnVJFE*
+AttrInputProp=-INPUT_PROP_BUTTONPAD
+AttrEventCode=+BTN_RIGHT
