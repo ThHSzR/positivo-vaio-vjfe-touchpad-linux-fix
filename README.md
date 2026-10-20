@@ -32,12 +32,24 @@ cd positivo-vaio-vjfe-touchpad-linux-fix
 ./install.sh
 ```
 
-O instalador verifica o modelo antes de alterar o sistema. Para testar em outro
-notebook que use exatamente o mesmo touchpad:
+O instalador verifica o modelo e o nome do touchpad antes de alterar o sistema.
+Para testar em outro notebook, use o modo forçado:
 
 ```bash
 ./install.sh --force
 ```
+
+Se o touchpad original não existir, esse modo procura outro dispositivo físico
+com `touchpad` no nome. Quando houver mais de um candidato, ou o dispositivo
+usar outro tipo de nome, informe o nome exato:
+
+```bash
+grep '^N: Name=' /proc/bus/input/devices
+./install.sh --force --device-name 'NOME EXATO DO TOUCHPAD'
+```
+
+O modo forçado gera a quirk e o preset para o nome detectado. Use-o somente se
+o diagnóstico confirmar que os botões enviam os mesmos códigos deslocados.
 
 ## O que a correção faz
 
@@ -80,10 +92,10 @@ Consulte [docs/technical-details.md](docs/technical-details.md).
 
 ## Escopo
 
-Esta correção é intencionalmente restrita ao `SYNA3602:00 0911:5288` em
-modelos Positivo VAIO VJFE. Outros computadores podem usar o mesmo ID com um
-descritor HID diferente; use `--force` apenas se o diagnóstico mostrar os
-mesmos códigos deslocados.
+Por padrão, esta correção é restrita ao `SYNA3602:00 0911:5288` em modelos
+Positivo VAIO VJFE. O modo `--force` amplia esse escopo de forma intencional;
+outros touchpads podem emitir códigos diferentes, portanto confirme antes que
+os botões físicos enviam 273 e 274.
 
 ## Licença
 

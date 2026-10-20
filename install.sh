@@ -1,26 +1,61 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-DEVICE_NAME='SYNA3602:00 0911:5288 Touchpad'
+DEFAULT_DEVICE_NAME='SYNA3602:00 0911:5288 Touchpad'
+DEVICE_NAME=$DEFAULT_DEVICE_NAME
 PRESET_NAME='Corrigir botoes fisicos'
 MANAGED_BEGIN='# BEGIN positivo-vaio-vjfe-touchpad-linux-fix'
 MANAGED_END='# END positivo-vaio-vjfe-touchpad-linux-fix'
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+INPUT_DEVICES_FILE=${INPUT_DEVICES_FILE:-/proc/bus/input/devices}
 FORCE=false
+DEVICE_NAME_EXPLICIT=false
 
-if [[ ${1:-} == '--force' ]]; then
-    FORCE=true
-elif [[ $# -gt 0 ]]; then
-    echo "Uso: $0 [--force]" >&2
-    exit 2
-fi
+usage() {
+    cat <<EOF
+Uso: $0 [--force] [--device-name NOME]
+
+  --force              ignora a validação do modelo e, se necessário,
+                       tenta detectar outro touchpad pelo nome
+  --device-name NOME   usa exatamente este dispositivo (implica --force)
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --force)
+            FORCE=true
+            shift
+            ;;
+        --device-name)
+            if [[ $# -lt 2 || -z ${2:-} ]]; then
+                echo 'Informe um nome depois de --device-name.' >&2
+                usage >&2
+                exit 2
+            fi
+            DEVICE_NAME=$2
+            DEVICE_NAME_EXPLICIT=true
+            FORCE=true
+            shift 2
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            echo "Opção desconhecida: $1" >&2
+            usage >&2
+            exit 2
+            ;;
+    esac
+done
 
 if [[ $EUID -eq 0 ]]; then
     echo 'Execute como usuário normal; o script solicitará sudo quando necessário.' >&2
     exit 1
 fi
 
-for command in sudo python3 gsettings awk grep; do
+for command in sudo python3 gsettings awk grep sort libinput systemctl; do
     command -v "$command" >/dev/null || {
         echo "Comando obrigatório ausente: $command" >&2
         exit 1
@@ -39,9 +74,54 @@ if [[ $dmi_vendor != 'Positivo Bahia - VAIO' || $dmi_product != VJFE* ]]; then
     echo 'Aviso: validação de modelo ignorada por --force.' >&2
 fi
 
-if ! grep -Fq "N: Name=\"$DEVICE_NAME\"" /proc/bus/input/devices; then
-    echo "Touchpad não encontrado: $DEVICE_NAME" >&2
-    exit 1
+device_exists() {
+    grep -Fq "N: Name=\"$1\"" "$INPUT_DEVICES_FILE"
+}
+
+list_input_names() {
+    awk -F'"' '/^N: Name="/ { print "  - " $2 }' "$INPUT_DEVICES_FILE"
+}
+
+if ! device_exists "$DEVICE_NAME"; then
+    if [[ $DEVICE_NAME_EXPLICIT == true ]]; then
+        echo "Dispositivo informado não encontrado: $DEVICE_NAME" >&2
+        echo 'Dispositivos de entrada disponíveis:' >&2
+        list_input_names >&2
+        exit 1
+    fi
+
+    if [[ $FORCE != true ]]; then
+        echo "Touchpad esperado não encontrado: $DEVICE_NAME" >&2
+        echo 'Use --force para detectar outro touchpad ou --device-name para informar o nome.' >&2
+        exit 1
+    fi
+
+    mapfile -t touchpad_candidates < <(
+        awk -F'"' '
+            /^N: Name="/ {
+                name = $2
+                lower = tolower(name)
+                if (lower ~ /touchpad/ && lower !~ /^input-remapper /)
+                    print name
+            }
+        ' "$INPUT_DEVICES_FILE" | sort -u
+    )
+
+    if [[ ${#touchpad_candidates[@]} -eq 1 ]]; then
+        DEVICE_NAME=${touchpad_candidates[0]}
+        echo "Aviso: usando o touchpad detectado por --force: $DEVICE_NAME" >&2
+    elif [[ ${#touchpad_candidates[@]} -eq 0 ]]; then
+        echo 'Nenhum dispositivo com "touchpad" no nome foi encontrado.' >&2
+        echo 'Execute novamente informando um dos nomes abaixo:' >&2
+        echo "  $0 --force --device-name 'NOME EXATO'" >&2
+        list_input_names >&2
+        exit 1
+    else
+        echo 'Mais de um touchpad foi encontrado; escolha explicitamente:' >&2
+        printf '  - %s\n' "${touchpad_candidates[@]}" >&2
+        echo "Exemplo: $0 --force --device-name '${touchpad_candidates[0]}'" >&2
+        exit 1
+    fi
 fi
 
 echo 'Instalando dependências do Ubuntu...'
@@ -83,7 +163,14 @@ fi
 
 {
     printf '\n%s\n' "$MANAGED_BEGIN"
-    cat "$SCRIPT_DIR/config/libinput-local-overrides.quirks"
+    awk -v name="$DEVICE_NAME" -v force="$FORCE" '
+        /^MatchName=/ {
+            print "MatchName=" name
+            next
+        }
+        force == "true" && /^MatchDMIModalias=/ { next }
+        { print }
+    ' "$SCRIPT_DIR/config/libinput-local-overrides.quirks"
     printf '%s\n' "$MANAGED_END"
 } >> "$tmp_quirks"
 
@@ -96,7 +183,7 @@ event_node=$(awk -v name="$DEVICE_NAME" '
             if ($i ~ /^event[0-9]+$/) event = $i
     }
     END { if (event) print "/dev/input/" event }
-' /proc/bus/input/devices)
+' "$INPUT_DEVICES_FILE")
 
 if [[ -z $event_node ]]; then
     echo 'Não foi possível localizar o event node do touchpad.' >&2
@@ -115,11 +202,17 @@ from inputremapper.configs.paths import CONFIG_PATH
 print(CONFIG_PATH)
 PY
 )
-preset_dir="$config_dir/presets/SYNA3602_00 0911_5288 Touchpad"
+preset_dir=$(DEVICE_NAME="$DEVICE_NAME" python3 - <<'PY'
+import os
+from inputremapper.configs.paths import get_preset_path
+
+print(get_preset_path(os.environ['DEVICE_NAME']))
+PY
+)
 mkdir -p "$preset_dir"
 install -m 0644 "$SCRIPT_DIR/config/physical-buttons.json" "$preset_dir/$PRESET_NAME.json"
 
-CONFIG_DIR="$config_dir" DEVICE_NAME="$DEVICE_NAME" PRESET_NAME="$PRESET_NAME" python3 - <<'PY'
+CONFIG_DIR="$config_dir" DEVICE_NAME="$DEVICE_NAME" PRESET_NAME="$PRESET_NAME" PRESET_DIR="$preset_dir" python3 - <<'PY'
 import json
 import os
 import tempfile
@@ -128,7 +221,9 @@ from inputremapper.logger import VERSION
 config_dir = os.environ['CONFIG_DIR']
 device_name = os.environ['DEVICE_NAME']
 preset_name = os.environ['PRESET_NAME']
+preset_dir = os.environ['PRESET_DIR']
 config_path = os.path.join(config_dir, 'config.json')
+state_path = os.path.join(config_dir, 'positivo-vaio-vjfe-touchpad-linux-fix.json')
 os.makedirs(config_dir, exist_ok=True)
 
 try:
@@ -145,6 +240,12 @@ with os.fdopen(fd, 'w', encoding='utf-8') as stream:
     json.dump(config, stream, indent=4)
     stream.write('\n')
 os.replace(temporary, config_path)
+
+fd, temporary = tempfile.mkstemp(dir=config_dir, prefix='.touchpad-fix-', text=True)
+with os.fdopen(fd, 'w', encoding='utf-8') as stream:
+    json.dump({'device_name': device_name, 'preset_dir': preset_dir}, stream, indent=4)
+    stream.write('\n')
+os.replace(temporary, state_path)
 PY
 
 gsettings set org.gnome.desktop.peripherals.touchpad left-handed 'right'
@@ -159,7 +260,7 @@ service.start_injecting(os.environ['DEVICE_NAME'], os.environ['PRESET_NAME'])
 PY
 
 sleep 2
-if ! grep -Fq 'N: Name="input-remapper mouse"' /proc/bus/input/devices; then
+if ! grep -Fq 'N: Name="input-remapper mouse"' "$INPUT_DEVICES_FILE"; then
     echo 'O dispositivo virtual não apareceu; consulte: journalctl -u input-remapper-daemon' >&2
     exit 1
 fi

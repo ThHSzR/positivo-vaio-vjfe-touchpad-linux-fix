@@ -43,6 +43,18 @@ O preset é registrado em `~/.config/input-remapper-2/config.json`. O serviço d
 `input-remapper` é iniciado pelo systemd, e o autoload da sessão aplica o preset
 quando o usuário entra no ambiente gráfico.
 
+## Modo forçado
+
+Sem opções, o instalador exige o DMI Positivo VAIO VJFE e o nome de dispositivo
+conhecido. Com `--force`, ele ignora o DMI e, se o dispositivo original não
+existir, procura um único dispositivo físico com `touchpad` no nome. O parâmetro
+`--device-name` permite selecionar explicitamente outro nome.
+
+Nesse modo, a quirk continua limitada por `MatchUdevType=touchpad` e
+`MatchName`, mas não inclui `MatchDMIModalias`. O nome efetivamente instalado é
+gravado na configuração do usuário para que `uninstall.sh` remova o preset
+correto.
+
 ## Referências
 
 - [libinput: Device quirks](https://wayland.freedesktop.org/libinput/doc/1.25.0/device-quirks.html)

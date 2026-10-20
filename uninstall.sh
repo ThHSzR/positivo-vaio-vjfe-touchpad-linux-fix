@@ -19,16 +19,6 @@ if [[ $EUID -eq 0 ]]; then
     exit 1
 fi
 
-if python3 -c 'import inputremapper' >/dev/null 2>&1; then
-    DEVICE_NAME="$DEVICE_NAME" python3 - <<'PY' || true
-import os
-from inputremapper.daemon import Daemon
-
-service = Daemon.connect(fallback=False)
-service.stop_injecting(os.environ['DEVICE_NAME'])
-PY
-fi
-
 user_home=$(getent passwd "$(id -u)" | cut -d: -f6)
 config_dir=${XDG_CONFIG_HOME:-$user_home/.config}/input-remapper-2
 if python3 -c 'from inputremapper.configs.paths import CONFIG_PATH' >/dev/null 2>&1; then
@@ -37,6 +27,35 @@ from inputremapper.configs.paths import CONFIG_PATH
 print(CONFIG_PATH)
 PY
 )
+fi
+
+state_path="$config_dir/positivo-vaio-vjfe-touchpad-linux-fix.json"
+preset_dir="$config_dir/presets/SYNA3602_00 0911_5288 Touchpad"
+if [[ -f $state_path ]]; then
+    mapfile -t install_state < <(STATE_PATH="$state_path" python3 - <<'PY'
+import json
+import os
+
+with open(os.environ['STATE_PATH'], encoding='utf-8') as stream:
+    state = json.load(stream)
+print(state['device_name'])
+print(state['preset_dir'])
+PY
+    )
+    if [[ ${#install_state[@]} -eq 2 ]]; then
+        DEVICE_NAME=${install_state[0]}
+        preset_dir=${install_state[1]}
+    fi
+fi
+
+if python3 -c 'import inputremapper' >/dev/null 2>&1; then
+    DEVICE_NAME="$DEVICE_NAME" python3 - <<'PY' || true
+import os
+from inputremapper.daemon import Daemon
+
+service = Daemon.connect(fallback=False)
+service.stop_injecting(os.environ['DEVICE_NAME'])
+PY
 fi
 
 CONFIG_DIR="$config_dir" DEVICE_NAME="$DEVICE_NAME" python3 - <<'PY'
@@ -59,7 +78,8 @@ with os.fdopen(fd, 'w', encoding='utf-8') as stream:
 os.replace(temporary, config_path)
 PY
 
-rm -f "$config_dir/presets/SYNA3602_00 0911_5288 Touchpad/$PRESET_NAME.json"
+rm -f "$preset_dir/$PRESET_NAME.json" "$state_path"
+rmdir "$preset_dir" 2>/dev/null || true
 
 if sudo test -f /etc/libinput/local-overrides.quirks; then
     tmp_quirks=$(mktemp)
